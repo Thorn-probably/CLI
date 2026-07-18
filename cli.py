@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Groq Terminal Chat - Dynamic Provider & Explicit ID Indexing Edition
+AI Terminal Chat - Dynamic Provider & Explicit ID Indexing Edition
 A highly flexible, provider-agnostic terminal chat application.
 Features an interactive CLI setup dialog for providers, persistent configuration,
 dynamic server-side model fetching, local context indexing via an Ollama Librarian,
@@ -323,16 +323,37 @@ class ChatApplication:
         except Exception as e:
             self.print_color("system", f"Loading failure: {e}\n")
 
+    def get_truncated_context(self, content, term, num_words=50):
+        term_lower = term.lower()
+        content_lower = content.lower()
+        idx = content_lower.find(term_lower)
+        if idx == -1:
+            return content
+        before_text = content[:idx]
+        after_text = content[idx + len(term):]
+        before_words = before_text.split()
+        after_words = after_text.split()
+        start_ellipsis = "... " if len(before_words) > num_words else ""
+        end_ellipsis = " ..." if len(after_words) > num_words else ""
+        before_snippet = " ".join(before_words[-num_words:])
+        after_snippet = " ".join(after_words[:num_words])
+        original_term = content[idx:idx + len(term)]
+        parts = []
+        if before_snippet: parts.append(start_ellipsis + before_snippet)
+        parts.append(original_term)
+        if after_snippet: parts.append(after_snippet + end_ellipsis)
+        return " ".join(parts).strip()
+
     def build_system_prompt(self):
         bot_name = self.config.get("assistant_name")
         mode = self.config.get("detail_mode", "medium")
         
         if mode == "low":
-            detail_instruction = "Use the absolute MINIMUM number of output tokens. Be hyper-concise. Output the shortest possible answer."
+            detail_instruction = "Use the absolute MINIMUM number of output tokens. Be hyper-concise. Output the shortest possible answer. USE UNICODE ONLY."
         elif mode == "high":
-            detail_instruction = "Provide highly detailed, exhaustive explanations. Give the AI full access to explain concepts thoroughly without token constraints."
+            detail_instruction = "Provide highly detailed, exhaustive explanations. Give the AI full access to explain concepts thoroughly without token constraints. USE UNICODE ONLY."
         else:
-            detail_instruction = "Keep your answers medium length. Be clear and helpful, but not overly verbose or hyper-concise."
+            detail_instruction = "Keep your answers medium length. Be clear and helpful, but not overly verbose or hyper-concise. USE UNICODE ONLY."
 
         return {
             "id": "SYS",
@@ -385,13 +406,15 @@ class ChatApplication:
             self.print_color("system", "  /switch <prov> <mod>   - Switch provider and model simultaneously")
             self.print_color("system", "  /save <name>           - Save the current conversation")
             self.print_color("system", "  /load <name>           - Load a conversation file")
+            self.print_color("system", "  /delete <name>         - Delete a conversation file")
             self.print_color("system", "  /list                  - List all saved conversations")
-            self.print_color("system", "  /search <word>         - Scan all saved chats for a word with context")
+            self.print_color("system", "  /search <word>         - Scan chats (supports 'chat <name>', 'n:<num>', quotes)")
             self.print_color("system", "  /remember <text>       - Summarize, deduplicate, and store a fact in RAG")
             self.print_color("system", "  /memories              - View all saved long-term memories and timestamps")
             self.print_color("system", "  /forget <id>           - Delete a specific memory (e.g., /forget M1)")
             self.print_color("system", "  /clear                 - Wipe active conversation memory")
             self.print_color("system", "  /detail <level>        - Set response detail level: low, medium, high")
+            self.print_color("system", "  /cap <number>          - Set an input token cap (or 'uncapped')")
             self.print_color("system", "  /config                - View/Edit system configurations")
             self.print_color("system", "  /exit                  - Close application\n")
             
@@ -551,6 +574,28 @@ class ChatApplication:
                     self.history[0] = self.system_prompt
                 self.print_color("system", f"Detail level set to: {level}\n")
                 
+        elif cmd == "/cap":
+            if not args:
+                cap = self.config.get("token_cap", 0)
+                status = "uncapped" if not cap else str(cap)
+                self.print_color("system", f"Current input token cap: {status}")
+                self.print_color("system", "Usage: /cap <number|uncapped>\n")
+            else:
+                val = args[0].lower()
+                if val in ["uncapped", "none", "0"]:
+                    self.config.set("token_cap", 0)
+                    self.print_color("system", "Input token cap disabled (uncapped).\n")
+                else:
+                    try:
+                        cap = int(val)
+                        if cap < 50:
+                            self.print_color("system", "Cap too low! Minimum is 50 tokens.\n")
+                        else:
+                            self.config.set("token_cap", cap)
+                            self.print_color("system", f"Input token cap set to: {cap} tokens.\n")
+                    except ValueError:
+                        self.print_color("system", "Invalid value. Must be a number or 'uncapped'.\n")
+                
         elif cmd == "/config":
             if not args:
                 self.print_color("system", "\n--- Global Configurations ---")
@@ -616,7 +661,8 @@ class ChatApplication:
                 response = requests.post("http://127.0.0.1:11434/api/generate", json={
                     "model": "qwen2.5:3b",
                     "prompt": f"Extract the core fact from this text into a single, ultra-concise sentence. Write it as a strict database fact about 'The user' (e.g., 'The user\\'s name is X' or 'The user likes Y'). Do not add conversational filler. Text: {raw_text}",
-                    "stream": False
+                    "stream": False,
+                    "keep_alive": -1
                 }, timeout=60)
                 response.raise_for_status()
                 summary = response.json().get("response", "").strip()
@@ -659,9 +705,8 @@ class ChatApplication:
                     "Output:"
                 )
                 try:
-                    res = requests.post("http://127.0.0.1:11434/api/generate", json={"model": "qwen2.5:3b", "prompt": dedup_prompt, "stream": False, "format": "json"}, timeout=60)
+                    res = requests.post("http://127.0.0.1:11434/api/generate", json={"model": "qwen2.5:3b", "prompt": dedup_prompt, "stream": False, "format": "json", "keep_alive": -1}, timeout=60)
                     resp_json = res.json().get("response", "").strip()
-                    import json
                     parsed = json.loads(resp_json)
                     action = parsed.get("action", "NONE")
                     target_id = parsed.get("target_id")
@@ -751,21 +796,55 @@ class ChatApplication:
                 if not_found:
                     self.print_color("system", f"Not found or invalid: {', '.join(not_found)}\n")
 
-        elif cmd == "/search":
+        elif cmd == "/delete":
             if not args:
-                self.print_color("system", "Usage: /search <word> OR /search in <filename> <word>")
+                self.print_color("system", "Usage: /delete <chatname>")
             else:
+                filename = args[0] if args[0].endswith(".txt") else f"{args[0]}.txt"
+                path = os.path.join(SESSIONS_DIR, filename)
+                if os.path.exists(path):
+                    try:
+                        os.remove(path)
+                        self.print_color("system", f"Deleted chat {filename}.\n")
+                        if self.current_file == filename:
+                            self.current_file = DEFAULT_AUTOSAVE_FILE
+                            self.history = [self.system_prompt]
+                            self.o_counter = 0
+                            self.a_counter = 0
+                            self.print_color("system", "Active chat was deleted. Starting a new session.\n")
+                    except Exception as e:
+                        self.print_color("system", f"Failed to delete {filename}: {e}\n")
+                else:
+                    self.print_color("system", f"Chat {filename} not found.\n")
+
+        elif cmd == "/search":
+            search_args_str = " ".join(args).strip()
+            if not search_args_str:
+                self.print_color("system", "Usage: /search <word> [n:<limit>] OR /search chat <filename> <word>")
+            else:
+                limit = 5
+                n_match = re.search(r'\bn:(\d+)\b', search_args_str)
+                if n_match:
+                    limit = int(n_match.group(1))
+                    search_args_str = search_args_str[:n_match.start()] + search_args_str[n_match.end():]
+                    search_args_str = search_args_str.strip()
+                    
                 target_files = []
                 term = ""
-                if args[0].lower() == "in" and len(args) >= 3:
-                    filename = args[1] if args[1].endswith(".txt") else f"{args[1]}.txt"
-                    term = " ".join(args[2:])
+                match = re.match(r'(?i)^(?:chat|in)\s+(\S+)\s+(.+)$', search_args_str)
+                if match:
+                    filename = match.group(1)
+                    if not filename.endswith(".txt"): filename += ".txt"
                     target_files = [filename]
+                    term = match.group(2)
                 else:
-                    term = " ".join(args)
                     target_files = [f for f in os.listdir(SESSIONS_DIR) if f.endswith(".txt") and f != DEFAULT_AUTOSAVE_FILE]
+                    term = search_args_str
+                    
+                if (term.startswith('"') and term.endswith('"')) or (term.startswith("'") and term.endswith("'")):
+                    term = term[1:-1]
 
-                self.print_color("system", f"\nScanning memory matrix for: '{term}'...")
+                self.print_color("system", f"\nScanning memory matrix for: '{term}' (limit: {limit}/file)...")
                 term_lower = term.lower()
                 results = {}
                 
@@ -794,7 +873,10 @@ class ChatApplication:
                             if term_lower in content.lower():
                                 if file not in results:
                                     results[file] = []
-                                results[file].append((tag, content))
+                                if len(results[file]) >= limit:
+                                    break
+                                trunc_content = self.get_truncated_context(content, term, 50)
+                                results[file].append((tag, trunc_content))
                                 
                     except json.JSONDecodeError:
                         pass
@@ -833,14 +915,27 @@ class ChatApplication:
             return [self.system_prompt]
 
         librarian_instruction = (
-            f"Analyze the following conversation history and memory bank. Identify which specific turn tags "
-            f"(e.g., O1, A2) or memory tags (e.g., M1) contain context strictly necessary to answer this new user query: '{current_user_input}'.\n\n"
-            f"History Map:\n{history_map}\n\nMemory Bank:\n{memory_map}\n\n"
-            f"Instructions: Return ONLY a comma-separated list of the relevant tags (e.g., 'O1,M2'). "
-            f"If none are relevant, reply with 'NONE'. Do not explain your reasoning."
+            f"You are a strict context extractor. Your ONLY job is to search the provided History Map and Memory Bank.\n\n"
+            f"User Query: '{current_user_input}'\n\n"
+            f"Active Chat Model: {self.config.get('provider')}/{self.config.get('model')}\n\n"
+            f"History Map:\n{history_map}\n\n"
+            f"Memory Bank:\n{memory_map}\n\n"
+            f"Instructions:\n"
+            f"1. Extract and return ONLY the actual text from the History Map or Memory Bank that is relevant to the User Query.\n"
+            f"2. DO NOT answer the user's query yourself. NEVER generate external knowledge.\n"
+            f"3. If the provided History Map and Memory Bank do not contain relevant information to answer the query, you MUST reply with exactly 'NONE'."
         )
 
-        payload = {"model": "qwen2.5:3b", "prompt": librarian_instruction, "stream": False}
+        payload = {
+            "model": "qwen2.5:3b", 
+            "prompt": librarian_instruction, 
+            "stream": False, 
+            "keep_alive": -1,
+            "options": {
+                "temperature": 0.0,
+                "num_predict": 250
+            }
+        }
 
         try:
             self.print_color("system", " [Librarian indexing local context & memories...]", end="")
@@ -852,27 +947,61 @@ class ChatApplication:
             sys.stdout.write("\r\033[K")
             sys.stdout.flush()
             
-            raw_tags = response.json().get("response", "").strip().upper()
-            selected_tags = re.findall(r'[OAM]\d+', raw_tags)
+            extracted_context = response.json().get("response", "").strip()
             
             optimized_payload = [self.system_prompt]
             
-            # Inject Selected Memories
-            for tag in selected_tags:
-                if tag.startswith('M'):
-                    target_mem = next((m for m in self.memories if m["id"] == tag), None)
-                    if target_mem:
-                        optimized_payload.append({
-                            "role": "system",
-                            "content": f"[SYSTEM RECALLED MEMORY {tag}]: {target_mem['content']}"
-                        })
+            active_provider = self.config.get("provider")
+            active_model = self.config.get("model")
+            optimized_payload.append({
+                "role": "system",
+                "content": f"[SYSTEM INFO]: The active chat provider is {active_provider} and the model is {active_model}."
+            })
+            
+            if extracted_context and extracted_context.upper() != "NONE":
+                optimized_payload.append({
+                    "role": "system",
+                    "content": f"[LIBRARIAN EXTRACTED CONTEXT]: {extracted_context}"
+                })
+            
+            for mem in self.memories:
+                if mem["id"] in current_user_input.upper():
+                    optimized_payload.append({
+                        "role": "system",
+                        "content": f"[SYSTEM RECALLED MEMORY {mem['id']}]: {mem['content']}"
+                    })
 
             # Inject Selected History
+            recent_msgs = self.history[-2:] if len(self.history) > 2 else self.history[1:]
             for msg in self.history[1:]:
                 current_tag = msg.get("id", "")
-                is_recent = current_tag == f"A{self.a_counter}"
+                is_recent = msg in recent_msgs
                 
-                if current_tag in selected_tags or current_tag in current_user_input.upper() or is_recent:
+                if current_tag in current_user_input.upper():
+                    if is_recent:
+                        optimized_payload.append({"role": msg["role"], "content": f"[{current_tag}]: {msg['content']}"})
+                    else:
+                        try:
+                            self.print_color("system", f"\r\033[K [Librarian summarizing historical {current_tag}...]", end="")
+                            sys.stdout.flush()
+                            sum_payload = {
+                                "model": "qwen2.5:3b",
+                                "prompt": f"Summarize the core points of this past message as concisely as possible:\n\n{msg['content']}",
+                                "stream": False,
+                                "keep_alive": -1,
+                                "options": {"temperature": 0.0, "num_predict": 100}
+                            }
+                            sum_response = requests.post("http://127.0.0.1:11434/api/generate", json=sum_payload, timeout=30)
+                            sum_response.raise_for_status()
+                            summarized_text = sum_response.json().get("response", "").strip()
+                            optimized_payload.append({"role": msg["role"], "content": f"[{current_tag} - SUMMARIZED]: {summarized_text}"})
+                            self.print_color("system", f"\r\033[K [Librarian indexing local context & memories...]", end="")
+                            sys.stdout.flush()
+                        except Exception as e:
+                            self.print_color("red", f"\r\033[K[Failed to summarize {current_tag}, injecting raw]")
+                            sys.stdout.flush()
+                            optimized_payload.append({"role": msg["role"], "content": f"[{current_tag}]: {msg['content']}"})
+                elif is_recent:
                     optimized_payload.append({"role": msg["role"], "content": f"[{current_tag}]: {msg['content']}"})
             
             return optimized_payload
@@ -881,7 +1010,12 @@ class ChatApplication:
             sys.stdout.write("\r\033[K")
             sys.stdout.flush()
             self.print_color("red", f"[Warning: Librarian failed to index context ({type(e).__name__}). Falling back to recent history.]\n")
-            return [self.system_prompt] + self.history[-4:]
+            active_provider = self.config.get("provider")
+            active_model = self.config.get("model")
+            return [
+                self.system_prompt,
+                {"role": "system", "content": f"[SYSTEM INFO]: The active chat provider is {active_provider} and the model is {active_model}."}
+            ] + self.history[-2:]
 
     def process_ai_response(self, raw_user_input):
         model = self.config.get("model")
@@ -896,6 +1030,21 @@ class ChatApplication:
         
         # Clean the ID tags out before sending to strict provider APIs
         clean_context = [{"role": m["role"], "content": m["content"]} for m in optimized_context]
+        
+        token_cap = self.config.get("token_cap", 0)
+        if token_cap > 0:
+            def est_tokens(ctx):
+                return sum(len(m["content"]) // 4 for m in ctx)
+            
+            while est_tokens(clean_context) > token_cap and len(clean_context) > 2:
+                removed = False
+                for i in range(1, len(clean_context) - 1):
+                    if clean_context[i]["role"] != "system":
+                        clean_context.pop(i)
+                        removed = True
+                        break
+                if not removed:
+                    break
         
         generator = self.client.stream_completion(model, clean_context)
         bot_name = self.config.get("assistant_name")

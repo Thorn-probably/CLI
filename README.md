@@ -143,7 +143,7 @@ Once you launch the application, you can chat directly with the active model. Us
 
 ### Customization
 - `/name user <name>` - Change your display name.
-- `/name bot <name>` - Change the assistant's name (Default is Ordis).
+- `/name bot <name>` - Change the assistant's name (Default is Assistant).
 - `/detail <low|medium|high>` - Adjust the prompt verbosity of the assistant.
 
 ---
