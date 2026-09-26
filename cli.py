@@ -122,6 +122,10 @@ class ConfigManager:
 
     def set(self, key, value):
         if key in self.config:
+            # stop cli over write of nested dicts so app 					does not crash
+            if isinstance(self.config[key], dict):
+                return False, f"Cant change complex structure '{key}' with cli. Please edit config.json."
+                
             if isinstance(self.config[key], bool):
                 if str(value).lower() in ['true', '1', 'yes']: value = True
                 elif str(value).lower() in ['false', '0', 'no']: value = False
@@ -619,7 +623,9 @@ class ChatApplication:
             if not args:
                 self.print_color("system", "Usage: /save <filename>")
             else:
-                name = args[0] if args[0].endswith(".txt") else f"{args[0]}.txt"
+                # strip directory/path traversal attempts (eg., ../../file.txt) by using basename
+                safe_name = os.path.basename(args[0])
+                name = safe_name if safe_name.endswith(".txt") else f"{safe_name}.txt"
                 self.current_file = name
                 self.save_conversation(name)
                 self.print_color("system", f"Conversation Matrix dumped safely to: {name}\n")
@@ -628,7 +634,9 @@ class ChatApplication:
             if not args:
                 self.print_color("system", "Usage: /load <filename>")
             else:
-                name = args[0] if args[0].endswith(".txt") else f"{args[0]}.txt"
+                # strip directory/path traversal attempts (eg., ../../file.txt) by using basename
+                safe_name = os.path.basename(args[0])
+                name = safe_name if safe_name.endswith(".txt") else f"{safe_name}.txt"
                 self.load_conversation(name)
 
         elif cmd == "/list":
@@ -787,12 +795,9 @@ class ChatApplication:
                         not_found.append(target_id)
                 
                 if forgotten:
-                    for i, m in enumerate(self.memories, 1):
-                        m["id"] = f"M{i}"
-                    self.m_counter = len(self.memories)
+                    # deleted re-indexing loop, because shifting M-tags breaks old chat logs that reference to specific ID
                     self.save_memories()
                     self.print_color("system", f"Erased from memory: {', '.join(forgotten)}\n")
-                    self.print_color("system", "Remaining memories have been sequentially re-indexed.\n")
                 if not_found:
                     self.print_color("system", f"Not found or invalid: {', '.join(not_found)}\n")
 
@@ -800,8 +805,11 @@ class ChatApplication:
             if not args:
                 self.print_color("system", "Usage: /delete <chatname>")
             else:
-                filename = args[0] if args[0].endswith(".txt") else f"{args[0]}.txt"
+                # strip directory/path traversal attempts (eg., ../../file.txt) by using basename
+                safe_name = os.path.basename(args[0])
+                filename = safe_name if safe_name.endswith(".txt") else f"{safe_name}.txt"
                 path = os.path.join(SESSIONS_DIR, filename)
+                
                 if os.path.exists(path):
                     try:
                         os.remove(path)
