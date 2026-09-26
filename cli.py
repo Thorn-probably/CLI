@@ -122,7 +122,7 @@ class ConfigManager:
 
     def set(self, key, value):
         if key in self.config:
-            # stop cli over write of nested dicts so app 					does not crash
+            # stop cli over write of nested dicts so app does not crash
             if isinstance(self.config[key], dict):
                 return False, f"Cant change complex structure '{key}' with cli. Please edit config.json."
                 
